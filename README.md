@@ -111,6 +111,11 @@ API responses are no-store.
 
 ## Execution and recovery
 
+Operators can configure [explicit execution bindings](docs/execution-bindings.md)
+for a selected service, with fixed owner mappings and hook-only delivery
+credentials. Bindings require a compatible core and an appropriately scoped
+schedule-management boundary; an owner email alone grants no data authority.
+
 The worker holds a PostgreSQL advisory lock on a dedicated connection; a second
 worker waits, retrying acquisition once per second on its dedicated connection.
 While waiting, `/health` returns 200 and `/ready` returns 503; no schedules are
