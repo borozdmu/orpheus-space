@@ -102,3 +102,21 @@ func TestBoundSnapshotRejectsUnknownAuthorityAndAmbiguity(t *testing.T) {
 		}
 	}
 }
+
+func TestBoundSnapshotWithoutHookServicesOmitsOptionalField(t *testing.T) {
+	cfg, row, occ := bindingFixture()
+	binding := cfg.Execution.Bindings["report-delivery"]
+	binding.HookServices = nil
+	cfg.Execution.Bindings["report-delivery"] = binding
+	snapshot, err := Builder(cfg)(row, occ, nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(snapshot.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["services"]; exists {
+		t.Fatal("absent hook services must not serialize as null")
+	}
+}

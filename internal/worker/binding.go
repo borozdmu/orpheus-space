@@ -64,11 +64,13 @@ func bindRequest(raw []byte, binding *config.ExecutionBinding, scope map[string]
 	if err != nil {
 		return nil, err
 	}
-	hookServices, err := json.Marshal(binding.HookServices)
-	if err != nil {
-		return nil, err
-	}
 	body["env"] = env
-	body["services"] = hookServices
+	if len(binding.HookServices) > 0 {
+		hookServices, err := json.Marshal(binding.HookServices)
+		if err != nil {
+			return nil, err
+		}
+		body["services"] = hookServices
+	}
 	return json.Marshal(body)
 }
