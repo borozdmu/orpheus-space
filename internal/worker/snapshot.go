@@ -52,11 +52,30 @@ func Builder(cfg config.Config) store.BuildSnapshot {
 		if err != nil {
 			return store.Snapshot{}, err
 		}
+		binding, scope, err := selectBinding(cfg, row, services)
+		if err != nil {
+			return store.Snapshot{}, err
+		}
 		configuration := coreapi.ConfigurationInput{Agent: coreapi.AgentInput{Profile: row.Profile, Model: row.Model, Instructions: cfg.Execution.Agent.Instructions}, Sandbox: coreapi.SandboxInput{Template: row.Template, Services: &services}, Limits: &coreapi.LimitsInput{RunTimeoutSeconds: new(cfg.Execution.Limits.RunTimeoutSeconds), MaxSessionTokens: cfg.Execution.Limits.MaxSessionTokens}}
+		if binding != nil {
+			if binding.Instructions != nil {
+				configuration.Agent.Instructions = binding.Instructions
+			}
+			configuration.Hooks = &coreapi.HooksInput{BeforeRun: binding.BeforeRun, AfterRun: binding.AfterRun}
+		}
 		fingerprintInput, _ := json.Marshal(struct {
 			Configuration coreapi.ConfigurationInput
 			Mode          string
 		}{configuration, row.SessionMode})
+		if binding != nil {
+			fingerprintInput, _ = json.Marshal(struct {
+				Base         json.RawMessage
+				Scope        map[string]any
+				Namespace    string
+				Owner        *string
+				HookServices []string
+			}{fingerprintInput, scope, binding.AuthorityNamespace, row.OwnerEmail, binding.HookServices})
+		}
 		hash := sha256.Sum256(fingerprintInput)
 		fingerprint := hex.EncodeToString(hash[:])
 		fields := messageFrontMatter{
@@ -88,6 +107,9 @@ func Builder(cfg config.Config) store.BuildSnapshot {
 			body = coreapi.CreateRun{Messages: messages}
 		}
 		raw, err := json.Marshal(body)
+		if err == nil {
+			raw, err = bindRequest(raw, binding, scope, row, occ, now)
+		}
 		snapshot.Body = raw
 		return snapshot, err
 	}

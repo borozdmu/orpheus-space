@@ -18,7 +18,8 @@ import (
 )
 
 type Execution struct {
-	Agent struct {
+	Bindings map[string]ExecutionBinding `toml:"bindings"`
+	Agent    struct {
 		Profile          string  `toml:"profile"`
 		Instructions     *string `toml:"instructions"`
 		InstructionsFile string  `toml:"instructions_file"`
@@ -149,6 +150,9 @@ func load(browser bool) (Config, error) {
 		return c, errors.New("invalid execution TOML")
 	}
 	c.Execution = cfg.Execution
+	if err := validateBindings(c.Execution.Bindings); err != nil {
+		return c, err
+	}
 	c.Access = cfg.Access
 	seen := make(map[string]bool, len(c.Access.AdminEmails))
 	for i, email := range c.Access.AdminEmails {
