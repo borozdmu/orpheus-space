@@ -371,7 +371,7 @@ func TestUncertainDispatchExpiresAfterRunTimeout(t *testing.T) {
 	}
 	// The last replay past the limit still fails: the occurrence is settled and
 	// the due period starts at once with a new key instead of being skipped.
-	*now = first.CreatedAt.Add(w.UncertainLimit + time.Second)
+	*now = first.CreatedAt.Add(w.UncertainLimit + 10*time.Second)
 	tick(t, w, f)
 	rows = history(t, w, task.ID)
 	if len(rows) != 2 || keyCount(f, key) != 3 {
@@ -411,12 +411,19 @@ func TestLateReplayAcceptanceWinsOverExpiry(t *testing.T) {
 		t.Fatal(rows)
 	}
 	// The core answers the original key after the limit: no second run starts.
+	// The period due meanwhile is skipped while the accepted run is active.
 	f.postError = ""
 	*now = first.CreatedAt.Add(2 * w.UncertainLimit)
 	tick(t, w, f)
 	rows := history(t, w, task.ID)
-	if len(rows) != 1 || rows[0].State != "accepted" || len(f.accepted) != 1 || keyCount(f, f.requests[0].key) != len(f.requests) {
+	original := rows[len(rows)-1]
+	if original.ID != first.ID || original.State != "accepted" || len(f.accepted) != 1 || keyCount(f, f.requests[0].key) != len(f.requests) {
 		t.Fatal(rows, f.requests)
+	}
+	for _, row := range rows[:len(rows)-1] {
+		if row.State != "skipped" || *row.ErrorCode != "previous_run_active" {
+			t.Fatal(rows)
+		}
 	}
 }
 func TestDefiniteRetriesDoNotExpire(t *testing.T) {

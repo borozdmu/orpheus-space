@@ -390,6 +390,7 @@ func (q *Queries) LastSuccessfulOccurrence(ctx context.Context, arg LastSuccessf
 const latestCompletion = `-- name: LatestCompletion :one
 SELECT COALESCE(finished_at,completed_at)::timestamptz AS boundary FROM schedule_occurrences
 WHERE schedule_id=$1 AND state IN ('accepted','failed') AND completed_at IS NOT NULL
+AND error_code IS DISTINCT FROM 'dispatch_uncertain_expired'
 ORDER BY COALESCE(finished_at,completed_at) DESC LIMIT 1
 `
 
