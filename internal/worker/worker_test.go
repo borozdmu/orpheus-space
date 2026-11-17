@@ -135,7 +135,7 @@ func fixture(t *testing.T) (*Worker, *coreFixture, *time.Time, schedule.Schedule
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker := &Worker{Store: storage, Core: client, Build: Builder(cfg), Now: func() time.Time { return *now }}
+	worker := &Worker{Store: storage, Core: client, Build: Builder(cfg), Now: func() time.Time { return *now }, UncertainLimit: UncertainLimit(cfg)}
 	f.mu.Lock()
 	t.Cleanup(f.mu.Unlock)
 	return worker, f, now, task
@@ -328,6 +328,119 @@ func TestDispatchFailures(t *testing.T) {
 				t.Fatal(rows)
 			}
 		})
+	}
+}
+func stored(t *testing.T, w *Worker, task schedule.Schedule, id uuid.UUID) db.ScheduleOccurrence {
+	t.Helper()
+	occ, err := db.New(w.Store.Pool).GetOccurrence(t.Context(), db.GetOccurrenceParams{ScheduleID: task.ID, ID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return occ
+}
+func keyCount(f *coreFixture, key string) int {
+	n := 0
+	for _, r := range f.requests {
+		if r.key == key {
+			n++
+		}
+	}
+	return n
+}
+func TestUncertainDispatchExpiresAfterRunTimeout(t *testing.T) {
+	w, f, now, task := fixture(t)
+	if w.UncertainLimit != time.Hour+5*time.Minute {
+		t.Fatal(w.UncertainLimit)
+	}
+	// The first answer is lost to a core outage.
+	f.postError, f.postStatus = "restarting", 503
+	*now = now.Add(time.Minute)
+	tick(t, w, f)
+	first := history(t, w, task.ID)[0]
+	if first.State != "dispatching" || *first.ErrorCode != "core_unavailable" || !stored(t, w, task, first.ID).Uncertain {
+		t.Fatal(first)
+	}
+	key := f.requests[0].key
+	// A definite rejection of the replay does not settle the lost answer.
+	f.postError, f.postStatus = "validation_error", 422
+	*now = first.CreatedAt.Add(w.UncertainLimit - time.Second)
+	tick(t, w, f)
+	rows := history(t, w, task.ID)
+	if len(rows) != 1 || rows[0].State != "dispatching" || *rows[0].ErrorCode != "validation_error" || rows[0].Attempts != 2 || keyCount(f, key) != 2 {
+		t.Fatal(rows, f.requests)
+	}
+	// The last replay past the limit still fails: the occurrence is settled and
+	// the due period starts at once with a new key instead of being skipped.
+	*now = first.CreatedAt.Add(w.UncertainLimit + time.Second)
+	tick(t, w, f)
+	rows = history(t, w, task.ID)
+	if len(rows) != 2 || keyCount(f, key) != 3 {
+		t.Fatal(rows, f.requests)
+	}
+	expired, next := rows[1], rows[0]
+	if expired.ID != first.ID || expired.State != "failed" || *expired.ErrorCode != ExpiredUncertainCode || expired.Attempts != 3 || expired.NextAttemptAt != nil || !stored(t, w, task, expired.ID).Uncertain {
+		t.Fatal(expired)
+	}
+	if !next.ScheduledAt.Equal(now.Truncate(time.Minute)) || next.State != "failed" || *next.ErrorCode != "validation_error" || f.requests[len(f.requests)-1].key == key {
+		t.Fatal(next, f.requests)
+	}
+	// The expired key is never sent again and later periods run normally.
+	f.postError = ""
+	*now = now.Add(time.Minute)
+	tick(t, w, f)
+	rows = history(t, w, task.ID)
+	if len(rows) != 3 || rows[0].State != "accepted" || keyCount(f, key) != 3 {
+		t.Fatal(rows, f.requests)
+	}
+}
+func TestLateReplayAcceptanceWinsOverExpiry(t *testing.T) {
+	w, f, now, task := fixture(t)
+	f.lose = true
+	*now = now.Add(time.Minute)
+	tick(t, w, f)
+	first := history(t, w, task.ID)[0]
+	if first.State != "dispatching" {
+		t.Fatal(first)
+	}
+	f.postError, f.postStatus = "restarting", 503
+	for range 3 {
+		*now = now.Add(20 * time.Minute)
+		tick(t, w, f)
+	}
+	if rows := history(t, w, task.ID); len(rows) != 1 || rows[0].State != "dispatching" {
+		t.Fatal(rows)
+	}
+	// The core answers the original key after the limit: no second run starts.
+	f.postError = ""
+	*now = first.CreatedAt.Add(2 * w.UncertainLimit)
+	tick(t, w, f)
+	rows := history(t, w, task.ID)
+	if len(rows) != 1 || rows[0].State != "accepted" || len(f.accepted) != 1 || keyCount(f, f.requests[0].key) != len(f.requests) {
+		t.Fatal(rows, f.requests)
+	}
+}
+func TestDefiniteRetriesDoNotExpire(t *testing.T) {
+	w, f, now, task := fixture(t)
+	f.postError, f.postStatus = "capacity_exhausted", 503
+	*now = now.Add(time.Minute)
+	tick(t, w, f)
+	*now = now.Add(2 * w.UncertainLimit)
+	tick(t, w, f)
+	rows := history(t, w, task.ID)
+	if len(rows) != 1 || rows[0].State != "dispatching" || *rows[0].ErrorCode != "capacity_exhausted" {
+		t.Fatal(rows)
+	}
+}
+func TestZeroUncertainLimitKeepsRetrying(t *testing.T) {
+	w, f, now, task := fixture(t)
+	w.UncertainLimit = 0
+	f.postError, f.postStatus = "restarting", 503
+	*now = now.Add(time.Minute)
+	tick(t, w, f)
+	*now = now.Add(48 * time.Hour)
+	tick(t, w, f)
+	if rows := history(t, w, task.ID); len(rows) != 1 || rows[0].State != "dispatching" {
+		t.Fatal(rows)
 	}
 }
 func TestLeadershipLossPreventsDispatch(t *testing.T) {

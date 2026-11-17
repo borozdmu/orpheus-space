@@ -4,10 +4,12 @@ package worker
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/orpheus-agents/orpheus-space/internal/config"
 	"github.com/orpheus-agents/orpheus-space/internal/core"
 	"github.com/orpheus-agents/orpheus-space/internal/store"
 	"github.com/orpheus-agents/orpheus-space/internal/store/db"
@@ -27,6 +29,19 @@ type Worker struct {
 	Build store.BuildSnapshot
 	Now   func() time.Time
 	Check func(context.Context) error
+	// UncertainLimit bounds how long after planning an unproven dispatch is
+	// replayed. Zero disables the bound.
+	UncertainLimit time.Duration
+}
+
+// ExpiredUncertainCode marks an occurrence whose dispatch outcome stayed
+// unknown until UncertainLimit. Planning does not treat it as a completed run.
+const ExpiredUncertainCode = "dispatch_uncertain_expired"
+
+// UncertainLimit outlasts the configured run timeout. If the core accepted a
+// request whose answer was lost, that run has ended before a successor starts.
+func UncertainLimit(cfg config.Config) time.Duration {
+	return time.Duration(cfg.Execution.Limits.RunTimeoutSeconds)*time.Second + 5*time.Minute
 }
 
 func (w *Worker) now() time.Time {
@@ -128,6 +143,12 @@ func (w *Worker) reconcile(ctx context.Context, occ db.ScheduleOccurrence) error
 	failure, known := errors.AsType[*core.Failure](err)
 	code := core.ErrorCode(err)
 	uncertain := previousUncertainty || !known || failure.Uncertain
+	// Core validates before replaying a key, so a definite rejection after a
+	// lost answer does not prove that nothing was accepted. Only time does.
+	if uncertain && w.UncertainLimit > 0 && !w.now().Before(occ.CreatedAt.Add(w.UncertainLimit)) {
+		slog.WarnContext(ctx, "Space dispatch outcome stayed unknown", "phase", "dispatch", "reason", ExpiredUncertainCode, "schedule_id", occ.ScheduleID, "occurrence_id", occ.ID, "attempts", occ.Attempts, "last_error_code", code)
+		return q.FinishDispatch(ctx, db.FinishDispatchParams{ID: occ.ID, State: "failed", ErrorCode: new(ExpiredUncertainCode), CompletedAt: new(w.now())})
+	}
 
 	retry := uncertain || code == "capacity_exhausted" || code == "session_busy" || code == "idempotency_conflict" || known && (failure.Status == 429 || failure.Status >= 500)
 	if !retry {
