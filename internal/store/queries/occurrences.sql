@@ -10,6 +10,7 @@ SELECT * FROM schedule_occurrences WHERE schedule_id=$1 AND completed_at IS NULL
 -- name: LatestCompletion :one
 SELECT COALESCE(finished_at,completed_at)::timestamptz AS boundary FROM schedule_occurrences
 WHERE schedule_id=$1 AND state IN ('accepted','failed') AND completed_at IS NOT NULL
+AND error_code IS DISTINCT FROM 'dispatch_uncertain_expired'
 ORDER BY COALESCE(finished_at,completed_at) DESC LIMIT 1;
 -- name: OccurrenceUpperBound :one
 SELECT COALESCE(max(sequence),0)::bigint FROM schedule_occurrences WHERE schedule_id=$1;

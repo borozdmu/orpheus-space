@@ -129,7 +129,7 @@ schedules. System probes run on the worker's own
 
 After downtime, only the latest due period is considered. Periods during a
 previous run are skipped using its actual `finished_at`; unknown outcomes block
-new execution until reconciled. There is no catch-up queue. `accepted` means the
+new execution until reconciled or expired. There is no catch-up queue. `accepted` means the
 core accepted the request; `run_status` records execution separately. Read errors
 retain the last status and `observed_at`, setting `sync_error_code`.
 
@@ -163,8 +163,17 @@ Retries preserve these timestamps even if stored history later changes.
 Before dispatch, Space persists the exact request bytes, path and idempotency key.
 Retries and restarts reuse them. Pause/delete cancels pending work; dispatching
 work is reconciled even after pause/delete, without cancelling an accepted run.
-An uncertain outcome stays unresolved on later auth/replay errors. Agent failures
-are not retried automatically. None of the snapshots contain secret ENV values.
+An uncertain outcome stays unresolved on later auth/replay errors: core validates
+before replaying a key, so a rejection does not prove nothing was accepted.
+
+Replays of an unknown dispatch stop once `run_timeout_seconds` plus 5 minutes have
+passed since planning. The next failed replay after that marks the occurrence
+`failed` with `dispatch_uncertain_expired`; a successful replay still wins. A
+lost-but-accepted run has ended by then, so this occurrence does not cause the
+due period to be skipped: it starts at once with a new key. The old key is never
+sent again. Retries without a lost answer (capacity, busy session, idempotency
+conflict) are not bounded. Agent failures are not retried automatically.
+None of the snapshots contain secret ENV values.
 
 `new` creates single-run sessions. `reuse` continues the same session until profile,
 template, model, service codes, session mode or effective base configuration changes,

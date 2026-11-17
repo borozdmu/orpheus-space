@@ -208,7 +208,7 @@ func runWorker(ctx context.Context, cfg config.Config) (result error) {
 	if err != nil {
 		return fail("core_client", "cannot initialize core client", err)
 	}
-	w := &worker.Worker{Store: &store.Store{Pool: pool}, Core: client, Build: worker.Builder(cfg), Poll: cfg.WorkerPoll}
+	w := &worker.Worker{Store: &store.Store{Pool: pool}, Core: client, Build: worker.Builder(cfg), Poll: cfg.WorkerPoll, UncertainLimit: worker.UncertainLimit(cfg)}
 	workerCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	listener, err := net.Listen("tcp", cfg.SystemAddress)
